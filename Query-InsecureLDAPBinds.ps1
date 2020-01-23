@@ -44,6 +44,8 @@ possibility of such damages.
 Param (
         [parameter(Mandatory=$false,Position=0)][String]$ComputerName = "localhost",
         [parameter(Mandatory=$false,Position=1)][Int]$Hours = 24)
+#retrieve all domain controllers in forest
+$allDCs = (Get-ADForest).Domains | %{ Get-ADDomainController -Filter * -Server $_ }
 
 # Create an Array to hold our returnedvValues
 $InsecureLDAPBinds = @()
@@ -51,6 +53,8 @@ $InsecureLDAPBinds = @()
 # Grab the appropriate event entries
 $Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")}
 
+# Loop through each DC in forest
+For Each ($dc in $allDCs){
 # Loop through each event and output the 
 ForEach ($Event in $Events) { 
 	$eventXML = [xml]$Event.ToXml()
@@ -78,7 +82,8 @@ ForEach ($Event in $Events) {
 }
 # Dump it all out to a CSV.
 Write-Host $InsecureLDAPBinds.Count "records saved to .\InsecureLDAPBinds.csv for Domain Controller" $ComputerName
-$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv
+$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv -append
+}
 # -----------------------------------------------------------------------------
 # End of Main Script
 # -----------------------------------------------------------------------------
