@@ -1,7 +1,6 @@
 <#-----------------------------------------------------------------------------
 Russell Tomkins
 Microsoft Premier Field Engineer
-
 Name:           Query-InsecureLDAPBinds.ps1
 Description:    Exports a CSV from the specified domain controller containing 
                 all Unsgined and Clear-text LDAP binds made to the DC by
@@ -44,46 +43,71 @@ possibility of such damages.
 Param (
         [parameter(Mandatory=$false,Position=0)][String]$ComputerName = "localhost",
         [parameter(Mandatory=$false,Position=1)][Int]$Hours = 24)
-#retrieve all domain controllers in forest
+
 $allDCs = (Get-ADForest).Domains | %{ Get-ADDomainController -Filter * -Server $_ }
 
-# Create an Array to hold our returnedvValues
-$InsecureLDAPBinds = @()
+[System.Collections.ArrayList]$InsecureLDAPBinds = @()
 
-# Grab the appropriate event entries
-$Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")}
 
-# Loop through each DC in forest
-For Each ($dc in $allDCs){
-# Loop through each event and output the 
-ForEach ($Event in $Events) { 
-	$eventXML = [xml]$Event.ToXml()
+ForEach($dc in $allDCs){
+
+	# Create an Array to hold our returnedvValues
+
+
+	$ComputerName = $dc.HostName 
+
+	# Grab the appropriate event entries
+	try{
+	$Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")} -ErrorAction Stop
+
+	}
+	catch [Exception] {
+		if ($_.Exception -match "No events were found that match the specified selection criteria") {
+		$Events = $null
+			 }
+	    }
+	# Loop through each event and output the 
+	ForEach ($Event in $Events) { 
+		$eventXML = [xml]$Event.ToXml()
+
+		# Build Our Values
+	    $Server = $ComputerName
+		$Client = ($eventXML.event.EventData.Data[0])
+		$IPAddress = $Client.SubString(0,$Client.LastIndexOf(":")) #Accomodates for IPV6 Addresses
+		$Port = $Client.SubString($Client.LastIndexOf(":")+1) #Accomodates for IPV6 Addresses
+		$User = $eventXML.event.EventData.Data[1]
+		Switch ($eventXML.event.EventData.Data[2])
+			{
+			0 {$BindType = "Unsigned"}
+			1 {$BindType = "Simple"}
+			}
+
+		# Add Them To a Row in our Array
+		$Row = "" | select Server,IPAddress,Port,User,BindType
+		$Row.Server = $Server
+	    $Row.IPAddress = $IPAddress
+		$Row.Port = $Port
+		$Row.User = $User
+		$Row.BindType = $BindType
+
+		# Add the row to our Array
+		$InsecureLDAPBinds += $Row
+
+
+	}
 	
-	# Build Our Values
-	$Client = ($eventXML.event.EventData.Data[0])
-	$IPAddress = $Client.SubString(0,$Client.LastIndexOf(":")) #Accomodates for IPV6 Addresses
-	$Port = $Client.SubString($Client.LastIndexOf(":")+1) #Accomodates for IPV6 Addresses
-	$User = $eventXML.event.EventData.Data[1]
-	Switch ($eventXML.event.EventData.Data[2])
-		{
-		0 {$BindType = "Unsigned"}
-		1 {$BindType = "Simple"}
-		}
-	
-	# Add Them To a Row in our Array
-	$Row = "" | select IPAddress,Port,User,BindType
-	$Row.IPAddress = $IPAddress
-	$Row.Port = $Port
-	$Row.User = $User
-	$Row.BindType = $BindType
-	
-	# Add the row to our Array
-	$InsecureLDAPBinds += $Row
-}
-# Dump it all out to a CSV.
-Write-Host $InsecureLDAPBinds.Count "records saved to .\InsecureLDAPBinds.csv for Domain Controller" $ComputerName
-$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv -append
+	# Dump it all out to a CSV.
+	Write-Host $InsecureLDAPBinds.Count "records saved to .\InsecureLDAPBinds.csv for Domain Controller" $ComputerName
+	$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv -append
+
+	#clear array
+	for ($i=0; $i -lt $InsecureLDAPBinds.count; $i++) {
+		$InsecureLDAPBinds.removeat($i)
+		$i--
+	}
+
+
 }
 # -----------------------------------------------------------------------------
 # End of Main Script
-# -----------------------------------------------------------------------------
+# -------------------
