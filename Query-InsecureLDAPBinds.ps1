@@ -20,16 +20,41 @@ Usage:          .\Query-InsecureLDAPBinds.ps1 [-ComputerName <DomainController>]
                 decrease this value as required
 Date:           1.0 - 27-01-2016 Russell Tomkins - Initial Release
                 1.1 - 27-01-2016 Russell Tomkins - Removed Type Info from CSV  
-		1.2 - 23-01-2019 Mike Burns - Added Multi DC and Registry Key Checking
+		        1.2 - 23-01-2019 Mike Burns - Added Multi DC and Registry Key Checking
 
 -----------------------------------------------------------------------------#>
 # -----------------------------------------------------------------------------
 # Begin Main Script
 # -----------------------------------------------------------------------------
 # Prepare Variables
+
 Param (
         [parameter(Mandatory=$false,Position=0)][String]$ComputerName = "localhost",
         [parameter(Mandatory=$false,Position=1)][Int]$Hours = 24)
+
+Function Quit() {
+    Write-Host "Quiting"
+    Break Script
+} 
+
+Function CheckLDAPRegistry() {
+$KeyCheck = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' 
+
+	if (-not $KeyCheck){
+	Write-Host -f red "Registry Key Not Found. Please Check for Updates"
+	 Quit
+	}
+
+	$value = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events').'16 LDAP Interface Events'
+	If ($value -lt 2){
+
+	 Write-host -f red "Registry Key Updated To Enable LDAP Interface Logging. Please Run Again in 24 Hours to Analayze Results"
+	 Set-Itemproperty -path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events' -value '2'
+
+}
+}
+
+
 
 $allDCs = (Get-ADForest).Domains | %{ Get-ADDomainController -Filter * -Server $_ }
 
@@ -42,7 +67,7 @@ ForEach($dc in $allDCs){
 	$ComputerName = $dc.HostName 
 	$locamachine = ([System.Net.Dns]::GetHostByName(($env:computerName))).Hostname
 #function to check if registry key exists and or the proper value for LDAP Interface Logging
-<##
+
 	#Run function on remote machine
 	If ($localmachine -ne $comptuername)
 	{
@@ -53,8 +78,6 @@ ForEach($dc in $allDCs){
 		CheckLDAPRegistry
 	}
 	
-##>
-
 	# Grab the appropriate event entries
 	try{
 	$Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")} -ErrorAction Stop
@@ -107,24 +130,4 @@ ForEach($dc in $allDCs){
 
 
 }
-# -----------------------------------------------------------------------------
-# End of Main Script
-# -------------------
-Function CheckLDAPRegistry() {
-$KeyCheck = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' 
-
-	if (-not $KeyCheck)
-	{
-	Write-Host -f red "Registry Key Not Found. Please Check for Updates"
-	 Quit
-	}
-
-	$value = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events').'16 LDAP Interface Events'
-	  $value
-
-	If ($value -lt 2){
-
-	 Write-host -f red "Registry Key Updated To Enable LDAP Interface Logging. Please Run Again in 24 Hours to Analayze Results"
-	 Set-Itemproperty -path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events' -value '2'
-
-}
+	
