@@ -1,7 +1,6 @@
 <#-----------------------------------------------------------------------------
-Russell Tomkins
-Microsoft Premier Field Engineer
-
+Author: Mike Burns
+Forked from Russell Tomkin - Microsoft Premier Field Engineer
 Name:           Query-InsecureLDAPBinds.ps1
 Description:    Exports a CSV from the specified domain controller containing 
                 all Unsgined and Clear-text LDAP binds made to the DC by
@@ -20,65 +19,115 @@ Usage:          .\Query-InsecureLDAPBinds.ps1 [-ComputerName <DomainController>]
                 return the past 24 hours worth of events. You can increase or 
                 decrease this value as required
 Date:           1.0 - 27-01-2016 Russell Tomkins - Initial Release
-                1.1 - 27-01-2016 Russell Tomkins - Removed Type Info from CSV   
--------------------------------------------------------------------------------
-Disclaimer
-The sample scripts are not supported under any Microsoft standard support 
-program or service. 
-The sample scripts are provided AS IS without warranty of any kind. Microsoft
-further disclaims all implied warranties including, without limitation, any 
-implied warranties of merchantability or of fitness for a particular purpose.
-The entire risk arising out of the use or performance of the sample scripts and 
-documentation remains with you. In no event shall Microsoft, its authors, or 
-anyone else involved in the creation, production, or delivery of the scripts be
-liable for any damages whatsoever (including, without limitation, damages for 
-loss of business profits, business interruption, loss of business information, 
-or other pecuniary loss) arising out of the use of or inability to use the 
-sample scripts or documentation, even if Microsoft has been advised of the 
-possibility of such damages.
+                1.1 - 27-01-2016 Russell Tomkins - Removed Type Info from CSV  
+		        1.2 - 23-01-2019 Mike Burns - Added Multi DC and Registry Key Checking
+
 -----------------------------------------------------------------------------#>
 # -----------------------------------------------------------------------------
 # Begin Main Script
 # -----------------------------------------------------------------------------
 # Prepare Variables
+
 Param (
         [parameter(Mandatory=$false,Position=0)][String]$ComputerName = "localhost",
         [parameter(Mandatory=$false,Position=1)][Int]$Hours = 24)
 
-# Create an Array to hold our returnedvValues
-$InsecureLDAPBinds = @()
+Function Quit() {
+    Write-Host "Quiting"
+    Break Script
+} 
 
-# Grab the appropriate event entries
-$Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")}
+Function CheckLDAPRegistry() {
+$KeyCheck = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' 
 
-# Loop through each event and output the 
-ForEach ($Event in $Events) { 
-	$eventXML = [xml]$Event.ToXml()
-	
-	# Build Our Values
-	$Client = ($eventXML.event.EventData.Data[0])
-	$IPAddress = $Client.SubString(0,$Client.LastIndexOf(":")) #Accomodates for IPV6 Addresses
-	$Port = $Client.SubString($Client.LastIndexOf(":")+1) #Accomodates for IPV6 Addresses
-	$User = $eventXML.event.EventData.Data[1]
-	Switch ($eventXML.event.EventData.Data[2])
-		{
-		0 {$BindType = "Unsigned"}
-		1 {$BindType = "Simple"}
-		}
-	
-	# Add Them To a Row in our Array
-	$Row = "" | select IPAddress,Port,User,BindType
-	$Row.IPAddress = $IPAddress
-	$Row.Port = $Port
-	$Row.User = $User
-	$Row.BindType = $BindType
-	
-	# Add the row to our Array
-	$InsecureLDAPBinds += $Row
+	if (-not $KeyCheck){
+	Write-Host -f red "Registry Key Not Found. Please Check for Updates"
+	 Quit
+	}
+
+	$value = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events').'16 LDAP Interface Events'
+	If ($value -lt 2){
+
+	 Write-host -f red "Registry Key Updated To Enable LDAP Interface Logging. Please Run Again in 24 Hours to Analayze Results"
+	 Set-Itemproperty -path 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Diagnostics' -Name '16 LDAP Interface Events' -value '2'
+
 }
-# Dump it all out to a CSV.
-Write-Host $InsecureLDAPBinds.Count "records saved to .\InsecureLDAPBinds.csv for Domain Controller" $ComputerName
-$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv
-# -----------------------------------------------------------------------------
-# End of Main Script
-# -----------------------------------------------------------------------------
+}
+
+
+
+$allDCs = (Get-ADForest).Domains | %{ Get-ADDomainController -Filter * -Server $_ }
+
+# Create an Array to hold our returnedvValues
+[System.Collections.ArrayList]$InsecureLDAPBinds = @()
+
+
+ForEach($dc in $allDCs){
+
+	$ComputerName = $dc.HostName 
+	$locamachine = ([System.Net.Dns]::GetHostByName(($env:computerName))).Hostname
+#function to check if registry key exists and or the proper value for LDAP Interface Logging
+
+	#Run function on remote machine
+	If ($localmachine -ne $comptuername)
+	{
+	Invoke-Command -ComputerName $ComputerName -ScriptBlock ${Function:CheckLDAPRegistry}
+	}
+	#Run funcation locally
+	Else{
+		CheckLDAPRegistry
+	}
+	
+	# Grab the appropriate event entries
+	try{
+	$Events = Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{Logname='Directory Service';Id=2889; StartTime=(get-date).AddHours("-$Hours")} -ErrorAction Stop
+
+	}
+	catch [Exception] {
+		if ($_.Exception -match "No events were found that match the specified selection criteria") {
+		$Events = $null
+			 }
+	    }
+	# Loop through each event and output the 
+	ForEach ($Event in $Events) { 
+		$eventXML = [xml]$Event.ToXml()
+
+		# Build Our Values
+	    $Server = $ComputerName
+		$Client = ($eventXML.event.EventData.Data[0])
+		$IPAddress = $Client.SubString(0,$Client.LastIndexOf(":")) #Accomodates for IPV6 Addresses
+		$Port = $Client.SubString($Client.LastIndexOf(":")+1) #Accomodates for IPV6 Addresses
+		$User = $eventXML.event.EventData.Data[1]
+		Switch ($eventXML.event.EventData.Data[2])
+			{
+			0 {$BindType = "Unsigned"}
+			1 {$BindType = "Simple"}
+			}
+
+		# Add Them To a Row in our Array
+		$Row = "" | select Server,IPAddress,Port,User,BindType
+		$Row.Server = $Server
+	    $Row.IPAddress = $IPAddress
+		$Row.Port = $Port
+		$Row.User = $User
+		$Row.BindType = $BindType
+
+		# Add the row to our Array
+		$InsecureLDAPBinds += $Row
+
+
+	}
+	
+	# Dump it all out to a CSV.
+	Write-Host $InsecureLDAPBinds.Count "records saved to .\InsecureLDAPBinds.csv for Domain Controller" $ComputerName
+	$InsecureLDAPBinds | Export-CSV -NoTypeInformation .\InsecureLDAPBinds.csv -append
+
+	#clear array
+	for ($i=0; $i -lt $InsecureLDAPBinds.count; $i++) {
+		$InsecureLDAPBinds.removeat($i)
+		$i--
+	}
+
+
+}
+	
